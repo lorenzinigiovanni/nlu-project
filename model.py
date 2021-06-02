@@ -18,7 +18,8 @@ class Model(nn.Module):
         self.ntoken = n_token
         self.drop = nn.Dropout(dropout)
         self.encoder = nn.Embedding(n_token, input_size)
-        self.rnn = MyLSTM(input_size, hidden_size)
+        self.rnn1 = MyLSTM(input_size, hidden_size)
+        self.rnn2 = MyLSTM(input_size, hidden_size)
         self.decoder = nn.Linear(hidden_size, n_token)
 
         self.init_weights()
@@ -32,10 +33,20 @@ class Model(nn.Module):
         nn.init.uniform_(self.decoder.weight, -init_range, init_range)
 
     def forward(self, input, hidden):
-        emb = self.drop(self.encoder(input))
+        output = self.drop(self.encoder(input))
 
-        output, hidden = self.rnn(emb, hidden)
-        output = self.drop(output)
+        for i in range(self.nlayers):
+            if i == 0:
+                output, hidden = self.rnn1(
+                    output,
+                    hidden
+                )
+            elif i == 1:
+                output, hidden = self.rnn2(
+                    output,
+                    hidden
+                )
+            output = self.drop(output[i, :, :, :])
 
         decoded = self.decoder(output)
         decoded = decoded.view(-1, self.ntoken)
@@ -44,7 +55,7 @@ class Model(nn.Module):
 
     def init_hidden(self, bsz):
         weight = next(self.parameters())
-        
+
         return (
             weight.new_zeros(self.nlayers, bsz, self.nhid),
             weight.new_zeros(self.nlayers, bsz, self.nhid)
