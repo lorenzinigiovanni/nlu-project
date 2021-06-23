@@ -89,11 +89,11 @@ def train():
         output, hidden = model(data, hidden)
 
         loss = criterion(output, targets)
+        opt.zero_grad()
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
-        for p in model.parameters():
-            p.data.add_(p.grad, alpha=-lr)
+        opt.step()
 
         total_loss += loss.item()
 
@@ -103,7 +103,6 @@ def train():
 
             print('| epoch {:3d} | '
                   '{:5d}/{:5d} batches | '
-                  'lr {:02.2f} | '
                   'ms/batch {:5.2f} | '
                   'loss {:5.2f} | '
                   'ppl {:8.2f} |'
@@ -111,7 +110,6 @@ def train():
                       epoch,
                       batch,
                       len(train_data) // sequence_length,
-                      lr,
                       elapsed * 1000 / log_interval,
                       cur_loss,
                       math.exp(cur_loss)
@@ -122,7 +120,8 @@ def train():
 
 
 best_val_loss = None
-lr = 20
+
+opt = torch.optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.99))
 
 for epoch in range(1, n_epochs + 1):
     epoch_start_time = time.time()
@@ -147,8 +146,6 @@ for epoch in range(1, n_epochs + 1):
         with open('model.pt', 'wb') as f:
             torch.save(model, f)
         best_val_loss = val_loss
-    else:
-        lr /= 4.0
 
 with open('model.pt', 'rb') as f:
     model = torch.load(f)

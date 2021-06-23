@@ -1,7 +1,7 @@
 
 import torch.nn as nn
 import torch.nn.functional as F
-from MyLSTM import MyLSTM
+from LSTM import LSTM
 
 
 class Model(nn.Module):
@@ -15,17 +15,20 @@ class Model(nn.Module):
     ):
         super(Model, self).__init__()
 
+        self.nhid = hidden_size
+        self.nlayers = num_layers
         self.ntoken = n_token
+
         self.drop = nn.Dropout(dropout)
         self.encoder = nn.Embedding(n_token, input_size)
-        self.rnn1 = MyLSTM(input_size, hidden_size)
-        self.rnn2 = MyLSTM(input_size, hidden_size)
+
+        self.rnn = nn.ModuleList()
+        for _ in range(self.nlayers):
+            self.rnn.append(LSTM(input_size, hidden_size))
+
         self.decoder = nn.Linear(hidden_size, n_token)
 
         self.init_weights()
-
-        self.nhid = hidden_size
-        self.nlayers = num_layers
 
     def init_weights(self):
         init_range = 0.1
@@ -36,16 +39,10 @@ class Model(nn.Module):
         output = self.drop(self.encoder(input))
 
         for i in range(self.nlayers):
-            if i == 0:
-                output, hidden = self.rnn1(
-                    output,
-                    hidden
-                )
-            elif i == 1:
-                output, hidden = self.rnn2(
-                    output,
-                    hidden
-                )
+            output, hidden = self.rnn[i](
+                output,
+                hidden
+            )
             output = self.drop(output[i, :, :, :])
 
         decoded = self.decoder(output)
