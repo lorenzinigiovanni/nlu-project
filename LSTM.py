@@ -35,13 +35,7 @@ class LSTM(nn.Module):
         seq_sz, bs, _ = x.size()
         hidden_seq = []
 
-        if init_states is None:
-            h_t, c_t = (
-                torch.zeros(bs, self.hidden_size).to(x.device),
-                torch.zeros(bs, self.hidden_size).to(x.device),
-            )
-        else:
-            h_t, c_t = init_states
+        h_t, c_t = init_states
 
         for t in range(seq_sz):
             x_t = x[t, :, :]

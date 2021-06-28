@@ -1,42 +1,33 @@
 import os
-from torch.utils.tensorboard import SummaryWriter
 import time
 import math
 import torch
 import torch.nn as nn
 import torch.onnx
+from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F
 
 import dataset
 from model import Model
 
-sequence_length = 32
+isTraining = True
+device = "cuda"
+
 clip = 0.25
 log_interval = 50
 input_size = 512
 hidden_size = 512
 num_layers = 2
 dropout = 0.5
-eval_batch_size = 64
+eval_batch_size = 1
 batch_size = 64
 n_epochs = 100
 
-device = "cuda"
+corpus = dataset.Corpus(device)
 
-criterion = nn.NLLLoss()
-
-corpus = dataset.Corpus()
-
-
-def batchify(data, bsz):
-    nbatch = data.size(0) // bsz
-    data = data.narrow(0, 0, nbatch * bsz)
-    data = data.view(bsz, -1).t().contiguous()
-    return data.to(device)
-
-
-train_data = batchify(corpus.train, batch_size)
-val_data = batchify(corpus.valid, eval_batch_size)
-test_data = batchify(corpus.test, eval_batch_size)
+train_data = corpus.train
+val_data = corpus.valid
+test_data = corpus.test
 
 n_token = len(corpus.dictionary)
 
@@ -49,30 +40,61 @@ model = Model(
 ).to(device)
 
 
-def get_batch(source, i):
-    seq_len = min(sequence_length, len(source) - 1 - i)
-    data = source[i:i+seq_len]
-    target = source[i+1:i+1+seq_len].view(-1)
+def get_sentence(source, i):
+    data = source[i][:-1]  # .view(-1, 1)
+    target = source[i][1:]
     return data, target
+
+
+def get_batch(source, i, batch_size):
+    datas = []
+    targets = []
+    lenghts = []
+
+    for j in range(batch_size):  # seq_len = min(args.bptt, len(source) - 1 - i)
+        data, target = get_sentence(source, i * batch_size + j)
+        datas.append(data)
+        targets.append(target)
+        lenghts.append(len(data))
+
+    datas = pad_sequence(
+        datas, padding_value=corpus.dictionary.word2idx['<pad>'])
+    targets = pad_sequence(
+        targets, padding_value=corpus.dictionary.word2idx['<pad>'])
+
+    size = sum(lenghts)
+
+    return datas, targets, size
 
 
 def evaluate(data_source):
     model.eval()
     total_loss = 0.
+    total_size = 0
 
     hidden = model.init_hidden(eval_batch_size)
 
+    batch_num = len(data_source) // eval_batch_size
+
     with torch.no_grad():
-        for i in range(0, data_source.size(0) - 1, sequence_length):
-            data, targets = get_batch(data_source, i)
+        for i in range(0, batch_num):
+            datas, targets, size = get_batch(train_data, i, eval_batch_size)
 
-            hidden = tuple(v.detach() for v in hidden)
-            output, hidden = model(data, hidden)
+            # hidden = tuple(v.detach() for v in hidden)
+            hidden = model.init_hidden(eval_batch_size)
+            output, hidden = model(datas, hidden)
 
-            loss = criterion(output, targets)
-            total_loss += loss.item() * len(data)
+            loss = F.nll_loss(
+                output,
+                targets.view(-1),
+                reduction='sum',
+                ignore_index=corpus.dictionary.word2idx['<pad>'],
+            )
 
-    return total_loss / len(data_source)
+            total_loss += loss.item()
+            total_size += size
+
+    return total_loss / total_size
 
 
 train_loss = 0
@@ -85,29 +107,43 @@ def train():
 
     model.train()
     total_loss = 0.
+    total_size = 0
+
     start_time = time.time()
 
     hidden = model.init_hidden(batch_size)
 
-    for batch, i in enumerate(range(0, train_data.size(0) - 1, sequence_length)):
+    batch_num = len(train_data) // batch_size
 
-        data, targets = get_batch(train_data, i)
+    for i in range(0, batch_num):
+        datas, targets, size = get_batch(train_data, i, batch_size)
+
         model.zero_grad()
 
-        hidden = tuple(v.detach() for v in hidden)
-        output, hidden = model(data, hidden)
+        # hidden = tuple(v.detach() for v in hidden)
+        hidden = model.init_hidden(batch_size)
+        output, hidden = model(datas, hidden)
 
-        loss = criterion(output, targets)
-        opt.zero_grad()
+        # output = target len * batch size
+
+        # output = pack_padded_sequence(output, lenghts, enforce_sorted=False)
+
+        loss = F.nll_loss(
+            output,
+            targets.view(-1),
+            reduction='sum',
+            ignore_index=corpus.dictionary.word2idx['<pad>'],
+        )
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         opt.step()
 
         total_loss += loss.item()
+        total_size += size
 
-        if batch % log_interval == 0 and batch > 0:
-            cur_loss = total_loss / log_interval
+        if i % log_interval == 0 and i > 0:
+            cur_loss = total_loss / total_size
             cur_ppl = math.exp(cur_loss)
             elapsed = time.time() - start_time
 
@@ -115,62 +151,65 @@ def train():
             train_ppl = cur_ppl
 
             print('| epoch {:3d} | '
-                  '{:5d}/{:5d} batches | '
+                  '{:5d}/{:5d} batch | '
                   'ms/batch {:5.2f} | '
                   'loss {:5.2f} | '
                   'ppl {:8.2f} |'
                   .format(
                       epoch,
-                      batch,
-                      len(train_data) // sequence_length,
+                      i,
+                      batch_num,
                       elapsed * 1000 / log_interval,
                       cur_loss,
                       cur_ppl,
                   ))
 
             total_loss = 0
+            total_size = 0
             start_time = time.time()
 
-fileNumber = str(len(os.listdir("runs"))+1)
-txt = open("runs/exp" + fileNumber + ".txt", 'w')
-txt.write('epoch\ttrain_loss\ttrain_ppl\tval_loss\tval_ppl\n')
 
-best_val_loss = None
+if isTraining:
+    fileNumber = str(len(os.listdir("runs"))+1)
+    txt = open("runs/exp" + fileNumber + ".txt", 'w')
+    txt.write('epoch\ttrain_loss\ttrain_ppl\tval_loss\tval_ppl\n')
 
-opt = torch.optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.99))
+    best_val_loss = None
 
-for epoch in range(1, n_epochs + 1):
-    epoch_start_time = time.time()
-    train()
-    val_loss = evaluate(val_data)
-    val_ppl = math.exp(val_loss)
+    opt = torch.optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.99))
 
-    txt.write('{}\t{}\t{}\t{}\t{}\n'.format(
-        epoch,
-        train_loss,
-        train_ppl,
-        val_loss,
-        val_ppl,
-    ))
+    for epoch in range(1, n_epochs + 1):
+        epoch_start_time = time.time()
+        train()
+        val_loss = evaluate(val_data)
+        val_ppl = math.exp(val_loss)
 
-    print('-' * 91)
-    print('| end of epoch {:3d} | '
-          'time: {:5.2f}s | '
-          'valid loss {:5.2f} | '
-          'valid ppl {:8.2f} |'
-          .format
-          (
-              epoch,
-              (time.time() - epoch_start_time),
-              val_loss,
-              val_ppl,
-          ))
-    print('-' * 91)
+        txt.write('{}\t{}\t{}\t{}\t{}\n'.format(
+            epoch,
+            train_loss,
+            train_ppl,
+            val_loss,
+            val_ppl,
+        ))
 
-    if not best_val_loss or val_loss < best_val_loss:
-        with open('models/exp' + fileNumber + '.pt', 'wb') as f:
-            torch.save(model, f)
-        best_val_loss = val_loss
+        print('-' * 91)
+        print('| end of epoch {:3d} | '
+              'time: {:5.2f}s | '
+              'valid loss {:5.2f} | '
+              'valid ppl {:8.2f} |'
+              .format
+              (
+                  epoch,
+                  (time.time() - epoch_start_time),
+                  val_loss,
+                  val_ppl,
+              ))
+        print('-' * 91)
+
+        if not best_val_loss or val_loss < best_val_loss:
+            with open('models/exp' + fileNumber + '.pt', 'wb') as f:
+                torch.save(model, f)
+            best_val_loss = val_loss
 
 with open('model.pt', 'rb') as f:
     model = torch.load(f)
@@ -186,4 +225,7 @@ print('| End of training | '
       ))
 print('=' * 91)
 
-txt.close()
+# vesuvio()
+
+if isTraining:
+    txt.close()

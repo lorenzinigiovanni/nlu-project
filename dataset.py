@@ -1,6 +1,7 @@
 import os
 from io import open
 import torch
+from torch._C import dtype
 
 
 class Dictionary(object):
@@ -19,11 +20,19 @@ class Dictionary(object):
 
 
 class Corpus(object):
-    def __init__(self):
+    def __init__(self, device):
         self.dictionary = Dictionary()
-        self.train = self.tokenize(os.path.join('ptbdataset', 'ptb.train.txt'))
-        self.valid = self.tokenize(os.path.join('ptbdataset', 'ptb.valid.txt'))
-        self.test = self.tokenize(os.path.join('ptbdataset', 'ptb.test.txt'))
+        self.device = device
+
+        self.dictionary.add_word('<pad>')
+
+        # self.train = self.tokenize(os.path.join('ptbdataset', 'ptb.train.txt'))
+        # self.valid = self.tokenize(os.path.join('ptbdataset', 'ptb.valid.txt'))
+        # self.test = self.tokenize(os.path.join('ptbdataset', 'ptb.test.txt'))
+
+        self.train = self.engoppenize(os.path.join('ptbdataset', 'ptb.train.txt'))
+        self.valid = self.engoppenize(os.path.join('ptbdataset', 'ptb.valid.txt'))
+        self.test = self.engoppenize(os.path.join('ptbdataset', 'ptb.test.txt'))
 
     def tokenize(self, path):
         with open(path, 'r') as f:
@@ -43,3 +52,21 @@ class Corpus(object):
             ids = torch.cat(idss)
 
         return ids
+
+    def engoppenize(self, path):
+        with open(path, 'r') as f:
+            for line in f:
+                words = ['<sos>'] + line.split() + ['<eos>']
+                for word in words:
+                    self.dictionary.add_word(word)
+
+        with open(path, 'r') as f:
+            idss = []
+            for line in f:
+                words = ['<sos>'] + line.split() + ['<eos>']
+                ids = []
+                for word in words:
+                    ids.append(self.dictionary.word2idx[word])
+                idss.append(torch.tensor(ids, device=self.device).type(torch.int64))
+
+        return idss
