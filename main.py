@@ -9,7 +9,7 @@ import dataset
 from model import Model
 
 # train or evaluate
-isTraining = False
+isTraining = True
 
 # use the LSTM cell that I programmed
 myLSTM = True
