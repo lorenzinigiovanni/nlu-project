@@ -2,7 +2,6 @@ import os
 import time
 import math
 import torch
-import torch.onnx
 from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
 
