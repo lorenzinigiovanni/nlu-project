@@ -1,7 +1,6 @@
 import os
 from io import open
 import torch
-from torch._C import dtype
 
 
 class Dictionary(object):
