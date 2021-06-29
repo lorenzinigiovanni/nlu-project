@@ -114,7 +114,6 @@ dmypy.json
 .pyre
 
 report
-ptbdataset
 *.pt
 runs
 sample.txt
