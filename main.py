@@ -2,7 +2,6 @@ import os
 import time
 import math
 import torch
-import torch.nn as nn
 import torch.onnx
 from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
@@ -10,7 +9,7 @@ import torch.nn.functional as F
 import dataset
 from model import Model
 
-isTraining = True
+isTraining = False
 device = "cuda"
 
 clip = 0.25
@@ -36,54 +35,68 @@ model = Model(
     input_size,
     hidden_size,
     num_layers,
-    dropout
+    dropout,
 ).to(device)
 
 
+# get a sentence from the dataset
 def get_sentence(source, i):
-    data = source[i][:-1]  # .view(-1, 1)
+    # for the input of the network trim the last word
+    data = source[i][:-1]
+    # for the ground truth trim the first word
     target = source[i][1:]
     return data, target
 
 
+# get a batch from the dataset
 def get_batch(source, i, batch_size):
     datas = []
     targets = []
     lenghts = []
 
-    for j in range(batch_size):  # seq_len = min(args.bptt, len(source) - 1 - i)
+    for j in range(batch_size):
         data, target = get_sentence(source, i * batch_size + j)
         datas.append(data)
         targets.append(target)
         lenghts.append(len(data))
 
+    # pad the data with the <pad> word to obtain the same length
     datas = pad_sequence(
-        datas, padding_value=corpus.dictionary.word2idx['<pad>'])
+        datas,
+        padding_value=corpus.dictionary.word2idx['<pad>'],
+    )
     targets = pad_sequence(
-        targets, padding_value=corpus.dictionary.word2idx['<pad>'])
+        targets,
+        padding_value=corpus.dictionary.word2idx['<pad>'],
+    )
 
+    # calculate the number of words in the batch (excluding the <pad>)
     size = sum(lenghts)
 
-    return datas, targets, size
+    return datas, targets, size, lenghts
 
 
+# calculate the loss and perplexity on validation or test data
 def evaluate(data_source):
+    # put the model in evaluation mode to disable dropout
     model.eval()
     total_loss = 0.
     total_size = 0
 
-    hidden = model.init_hidden(eval_batch_size)
-
+    # compute the number of batch
     batch_num = len(data_source) // eval_batch_size
 
     with torch.no_grad():
+        # cycle over all the batches
         for i in range(0, batch_num):
-            datas, targets, size = get_batch(train_data, i, eval_batch_size)
+            datas, targets, size, lenghts = get_batch(data_source, i, eval_batch_size)
 
-            # hidden = tuple(v.detach() for v in hidden)
+            # initialize the hidden states
             hidden = model.init_hidden(eval_batch_size)
-            output, hidden = model(datas, hidden)
+            # make the computations
+            output, hidden = model(datas, hidden, lenghts)
 
+            # compute the negative log likelihood loss excluding the <pad> word
             loss = F.nll_loss(
                 output,
                 targets.view(-1),
@@ -101,42 +114,46 @@ train_loss = 0
 train_ppl = 0
 
 
+# train the model using the training data
 def train():
     global train_loss
     global train_ppl
 
+    # put the model in training mode to enable dropout
     model.train()
     total_loss = 0.
     total_size = 0
 
     start_time = time.time()
 
-    hidden = model.init_hidden(batch_size)
-
+    # compute the number of batch
     batch_num = len(train_data) // batch_size
 
+    # cycle over all the batches
     for i in range(0, batch_num):
-        datas, targets, size = get_batch(train_data, i, batch_size)
+        datas, targets, size, lenghts = get_batch(train_data, i, batch_size)
 
+        # set the paramenters tensors gradients to zero
         model.zero_grad()
 
-        # hidden = tuple(v.detach() for v in hidden)
+        # initialize the hidden states
         hidden = model.init_hidden(batch_size)
-        output, hidden = model(datas, hidden)
+        # make the computations
+        output, hidden = model(datas, hidden, lenghts)
 
-        # output = target len * batch size
-
-        # output = pack_padded_sequence(output, lenghts, enforce_sorted=False)
-
+        # compute the negative log likelihood loss excluding the <pad> word
         loss = F.nll_loss(
             output,
             targets.view(-1),
             reduction='sum',
             ignore_index=corpus.dictionary.word2idx['<pad>'],
         )
+        # compute the paramenters tensors gradients
         loss.backward()
 
+        # clip the gradient norm
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+        # update the paramenters tensors
         opt.step()
 
         total_loss += loss.item()
@@ -169,21 +186,60 @@ def train():
             start_time = time.time()
 
 
+# generate a sentence starting from a random word
+def generateSentence():
+    # put the model in evaluation mode to disable dropout
+    model.eval()
+
+    with torch.no_grad():
+        with open('sample.txt', 'w') as f:
+           # initialize the hidden states
+            hidden = model.init_hidden(batch_size)
+
+            # Select one word id randomly
+            prob = torch.ones(n_token)
+            input = torch.multinomial(prob, num_samples=1).unsqueeze(1).to(device)
+
+            for _ in range(100):
+                # make the computations
+                output, state = model(input, hidden, 1)
+
+                # Sample a word id
+                prob = output.exp()
+                word_id = torch.multinomial(prob, num_samples=1).item()
+
+                # Fill input with sampled word id for the next time step
+                input.fill_(word_id)
+
+                # File write
+                word = corpus.dictionary.idx2word[word_id]
+                word = '\n' if word == '<eos>' else word + ' '
+                f.write(word)
+
+
 if isTraining:
+    # store loss and ppl of the runs in txt files
     fileNumber = str(len(os.listdir("runs"))+1)
     txt = open("runs/exp" + fileNumber + ".txt", 'w')
     txt.write('epoch\ttrain_loss\ttrain_ppl\tval_loss\tval_ppl\n')
 
     best_val_loss = None
 
+    # instantiate and Adam optimizer
     opt = torch.optim.Adam(model.parameters(), lr=0.001, betas=(0.9, 0.99))
 
+    # cycle for the n_epochs
     for epoch in range(1, n_epochs + 1):
         epoch_start_time = time.time()
+        
+        # call the train function
         train()
+        
+        # compute the validation loss and ppl
         val_loss = evaluate(val_data)
         val_ppl = math.exp(val_loss)
 
+        # save loss and ppl in a txt file
         txt.write('{}\t{}\t{}\t{}\t{}\n'.format(
             epoch,
             train_loss,
@@ -206,14 +262,18 @@ if isTraining:
               ))
         print('-' * 91)
 
+        # save the model if it is better than the previous one
         if not best_val_loss or val_loss < best_val_loss:
             with open('models/exp' + fileNumber + '.pt', 'wb') as f:
                 torch.save(model, f)
             best_val_loss = val_loss
 
+    txt.close()
+
 with open('model.pt', 'rb') as f:
     model = torch.load(f)
 
+# compute the test loss and ppl
 test_loss = evaluate(test_data)
 print('=' * 91)
 print('| End of training | '
@@ -225,7 +285,5 @@ print('| End of training | '
       ))
 print('=' * 91)
 
-# vesuvio()
-
-if isTraining:
-    txt.close()
+# generate a sample sentence
+generateSentence()

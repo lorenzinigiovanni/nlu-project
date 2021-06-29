@@ -26,40 +26,19 @@ class Corpus(object):
 
         self.dictionary.add_word('<pad>')
 
-        # self.train = self.tokenize(os.path.join('ptbdataset', 'ptb.train.txt'))
-        # self.valid = self.tokenize(os.path.join('ptbdataset', 'ptb.valid.txt'))
-        # self.test = self.tokenize(os.path.join('ptbdataset', 'ptb.test.txt'))
-
-        self.train = self.engoppenize(os.path.join('ptbdataset', 'ptb.train.txt'))
-        self.valid = self.engoppenize(os.path.join('ptbdataset', 'ptb.valid.txt'))
-        self.test = self.engoppenize(os.path.join('ptbdataset', 'ptb.test.txt'))
+        self.train = self.tokenize(os.path.join('ptbdataset', 'ptb.train.txt'))
+        self.valid = self.tokenize(os.path.join('ptbdataset', 'ptb.valid.txt'))
+        self.test = self.tokenize(os.path.join('ptbdataset', 'ptb.test.txt'))
 
     def tokenize(self, path):
-        with open(path, 'r') as f:
-            for line in f:
-                words = line.split() + ['<eos>']
-                for word in words:
-                    self.dictionary.add_word(word)
-
-        with open(path, 'r') as f:
-            idss = []
-            for line in f:
-                words = line.split() + ['<eos>']
-                ids = []
-                for word in words:
-                    ids.append(self.dictionary.word2idx[word])
-                idss.append(torch.tensor(ids).type(torch.int64))
-            ids = torch.cat(idss)
-
-        return ids
-
-    def engoppenize(self, path):
+        # read the dataset files and store the tokens in a dictionary
         with open(path, 'r') as f:
             for line in f:
                 words = ['<sos>'] + line.split() + ['<eos>']
                 for word in words:
                     self.dictionary.add_word(word)
 
+        # create a list of sentences 
         with open(path, 'r') as f:
             idss = []
             for line in f:
@@ -67,6 +46,7 @@ class Corpus(object):
                 ids = []
                 for word in words:
                     ids.append(self.dictionary.word2idx[word])
-                idss.append(torch.tensor(ids, device=self.device).type(torch.int64))
+                idss.append(torch.tensor(
+                    ids, device=self.device).type(torch.int64))
 
         return idss
