@@ -9,7 +9,13 @@ import torch.nn.functional as F
 import dataset
 from model import Model
 
+# train or evaluate
 isTraining = False
+
+# use the LSTM cell that I programmed
+myLSTM = True
+
+# train on cpu or cuda
 device = "cuda"
 
 clip = 0.25
@@ -36,6 +42,7 @@ model = Model(
     hidden_size,
     num_layers,
     dropout,
+    not myLSTM,
 ).to(device)
 
 
@@ -194,26 +201,34 @@ def generateSentence():
     with torch.no_grad():
         with open('sample.txt', 'w') as f:
            # initialize the hidden states
-            hidden = model.init_hidden(batch_size)
+            hidden = model.init_hidden(1)
 
             # Select one word id randomly
-            prob = torch.ones(n_token)
-            input = torch.multinomial(prob, num_samples=1).unsqueeze(1).to(device)
+            probability = torch.ones(n_token)
+            input = torch.multinomial(probability, num_samples=1).unsqueeze(1).to(device)
 
-            for _ in range(100):
+            for _ in range(1000):
                 # make the computations
-                output, state = model(input, hidden, 1)
+                output, hidden = model(input, hidden, [1])
 
-                # Sample a word id
-                prob = output.exp()
+                # sample a word id
+                prob = output.exp()[-1:]
                 word_id = torch.multinomial(prob, num_samples=1).item()
 
-                # Fill input with sampled word id for the next time step
-                input.fill_(word_id)
+                # fill input with sampled word id for the next time step
+                input = torch.cat((input.view(-1), torch.tensor([word_id], device=device)))
+                input = input.view(-1, 1)
 
-                # File write
                 word = corpus.dictionary.idx2word[word_id]
-                word = '\n' if word == '<eos>' else word + ' '
+                if word == '<eos>':
+                    # start a new sentence
+                    word = '\n'
+                    input = torch.multinomial(probability, num_samples=1).unsqueeze(1).to(device)
+                else:
+                    # continue the previous sentence
+                    word = word + ' '
+
+                # file write
                 f.write(word)
 
 
@@ -231,10 +246,10 @@ if isTraining:
     # cycle for the n_epochs
     for epoch in range(1, n_epochs + 1):
         epoch_start_time = time.time()
-        
+
         # call the train function
         train()
-        
+
         # compute the validation loss and ppl
         val_loss = evaluate(val_data)
         val_ppl = math.exp(val_loss)
