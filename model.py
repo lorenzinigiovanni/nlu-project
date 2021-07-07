@@ -18,9 +18,8 @@ class Model(nn.Module):
     ):
         super(Model, self).__init__()
 
-        self.nhid = hidden_size
-        self.nlayers = num_layers
-        self.ntoken = n_token
+        self.num_layers = num_layers
+        self.n_token = n_token
         self.pytorch = pytorch
 
         # dropout, to be used on input, between layers and on output
@@ -32,7 +31,7 @@ class Model(nn.Module):
         if not self.pytorch:
             # list of LSTM, one for each layer
             self.rnn = nn.ModuleList()
-            for _ in range(self.nlayers):
+            for _ in range(self.num_layers):
                 self.rnn.append(LSTM(input_size, hidden_size))
 
         if self.pytorch:
@@ -46,20 +45,10 @@ class Model(nn.Module):
         self.init_weights()
 
     def init_weights(self):
-        init_range = 0.1
-        nn.init.uniform_(self.encoder.weight, -init_range, init_range)
-        nn.init.zeros_(self.decoder.weight)
-        nn.init.uniform_(self.decoder.weight, -init_range, init_range)
+        nn.init.uniform_(self.encoder.weight, -0.1, 0.1)
+        nn.init.uniform_(self.decoder.weight, -0.1, 0.1)
 
-    def init_hidden(self, bsz):
-        weight = next(self.parameters())
-
-        return (
-            weight.new_zeros(self.nlayers, bsz, self.nhid),
-            weight.new_zeros(self.nlayers, bsz, self.nhid),
-        )
-
-    def forward(self, input, hidden, lenghts):
+    def forward(self, input, lenghts, hidden_states):
         # encode the input
         emb = self.encoder(input)
 
@@ -70,24 +59,27 @@ class Model(nn.Module):
             output = dropped
 
             # cycle over the layers of the LSTM
-            for i in range(self.nlayers):
+            for i in range(self.num_layers):
                 # pass the data to the LSTM
-                output, hidden = self.rnn[i](
-                    output,
-                    hidden
-                )
+                output, hidden = self.rnn[i](output, hidden_states[i])
+                # update the hidden states
+                hidden_states[i] = hidden
                 # apply dropout on the output
-                output = self.drop(output[i, :, :, :])
+                output = self.drop(output)
 
         if self.pytorch:
+            # pack the padded sequence
             packed = pack_padded_sequence(dropped, lenghts, enforce_sorted=False)
-            output, hidden = self.rnn(packed, hidden)
+            # pass the data to the LSTM
+            output, hidden_states = self.rnn(packed, hidden_states if hidden_states[0] is not None else None)
+            # upack by padding, the packed sequence
             output, _ = pad_packed_sequence(output)
+            # apply dropout on the output
             output = self.drop(output)
 
         # decode the output
         decoded = self.decoder(output)
-        decoded = decoded.view(-1, self.ntoken)
+        decoded = decoded.view(-1, self.n_token)
 
-        # apply the log softmax to the output and return it alongside hidden states
-        return F.log_softmax(decoded, dim=1), hidden
+        # apply the log softmax to the output and return it
+        return F.log_softmax(decoded, dim=1), hidden_states

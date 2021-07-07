@@ -1,6 +1,7 @@
 import os
 import time
 import math
+import random
 import torch
 from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
@@ -9,10 +10,10 @@ import dataset
 from model import Model
 
 # train or evaluate
-isTraining = True
+is_training = True
 
 # use the LSTM cell that I programmed
-myLSTM = True
+my_lstm = True
 
 # train on cpu or cuda
 device = "cuda"
@@ -41,7 +42,7 @@ model = Model(
     hidden_size,
     num_layers,
     dropout,
-    not myLSTM,
+    not my_lstm,
 ).to(device)
 
 
@@ -97,10 +98,10 @@ def evaluate(data_source):
         for i in range(0, batch_num):
             datas, targets, size, lenghts = get_batch(data_source, i, eval_batch_size)
 
-            # initialize the hidden states
-            hidden = model.init_hidden(eval_batch_size)
+            hidden_states = [None] * num_layers
+
             # make the computations
-            output, hidden = model(datas, hidden, lenghts)
+            output, _ = model(datas, lenghts, hidden_states)
 
             # compute the negative log likelihood loss excluding the <pad> word
             loss = F.nll_loss(
@@ -130,8 +131,6 @@ def train():
     total_loss = 0.
     total_size = 0
 
-    start_time = time.time()
-
     # compute the number of batch
     batch_num = len(train_data) // batch_size
 
@@ -142,10 +141,10 @@ def train():
         # set the paramenters tensors gradients to zero
         model.zero_grad()
 
-        # initialize the hidden states
-        hidden = model.init_hidden(batch_size)
+        hidden_states = [None] * num_layers
+
         # make the computations
-        output, hidden = model(datas, hidden, lenghts)
+        output, _ = model(datas, lenghts, hidden_states)
 
         # compute the negative log likelihood loss excluding the <pad> word
         loss = F.nll_loss(
@@ -168,47 +167,40 @@ def train():
         if i % log_interval == 0 and i > 0:
             cur_loss = total_loss / total_size
             cur_ppl = math.exp(cur_loss)
-            elapsed = time.time() - start_time
 
             train_loss = cur_loss
             train_ppl = cur_ppl
 
-            print('| epoch {:3d} | '
-                  '{:5d}/{:5d} batch | '
-                  'ms/batch {:5.2f} | '
-                  'loss {:5.2f} | '
-                  'ppl {:8.2f} |'
+            print('Epoch {:3d} | '
+                  'Train loss {:5.2f} | '
+                  'Train PPL {:8.2f}'
                   .format(
                       epoch,
-                      i,
-                      batch_num,
-                      elapsed * 1000 / log_interval,
                       cur_loss,
                       cur_ppl,
                   ))
 
             total_loss = 0
             total_size = 0
-            start_time = time.time()
 
 
-# generate a sentence starting from a random word
-def generateSentence():
+# generate some sentences starting from random words
+def generate_sentences():
     # put the model in evaluation mode to disable dropout
     model.eval()
 
     with torch.no_grad():
         with open('sample.txt', 'w') as f:
-           # initialize the hidden states
-            hidden = model.init_hidden(1)
-
             # Select one word id randomly
-            probability = torch.ones(n_token)
-            input = torch.multinomial(probability, num_samples=1).unsqueeze(1).to(device)
+            rand = random.randint(1, n_token-1)
+            input = torch.tensor([[rand]], device=device, dtype=torch.int64)
+
+            sentence = []
+            hidden_states = [None] * num_layers
 
             for _ in range(1000):
                 # make the computations
-                output, hidden = model(input, hidden, [1])
+                output, hidden_states = model(input, [len(sentence)+1], hidden_states)
 
                 # sample a word id
                 prob = output.exp()[-1:]
@@ -219,19 +211,21 @@ def generateSentence():
                 input = input.view(-1, 1)
 
                 word = corpus.dictionary.idx2word[word_id]
+                sentence.append(word)
+
                 if word == '<eos>':
+                    # file write
+                    f.write(' '.join(sentence))
+                    f.write('\n')
+
                     # start a new sentence
-                    word = '\n'
-                    input = torch.multinomial(probability, num_samples=1).unsqueeze(1).to(device)
-                else:
-                    # continue the previous sentence
-                    word = word + ' '
+                    sentence = []
 
-                # file write
-                f.write(word)
+                    rand = random.randint(1, n_token-1)
+                    input = torch.tensor([[rand]], device=device, dtype=torch.int64)
 
 
-if isTraining:
+if is_training:
     # store loss and ppl of the runs in txt files
     fileNumber = str(len(os.listdir("runs"))+1)
     txt = open("runs/exp" + fileNumber + ".txt", 'w')
@@ -262,19 +256,16 @@ if isTraining:
             val_ppl,
         ))
 
-        print('-' * 91)
-        print('| end of epoch {:3d} | '
-              'time: {:5.2f}s | '
-              'valid loss {:5.2f} | '
-              'valid ppl {:8.2f} |'
-              .format
-              (
+        print()
+        print('Epoch {:3d} | '
+              'Valid loss {:5.2f} | '
+              'Valid PPL {:8.2f}'
+              .format(
                   epoch,
-                  (time.time() - epoch_start_time),
                   val_loss,
                   val_ppl,
               ))
-        print('-' * 91)
+        print()
 
         # save the model if it is better than the previous one
         if not best_val_loss or val_loss < best_val_loss:
@@ -289,15 +280,16 @@ with open('model.pt', 'rb') as f:
 
 # compute the test loss and ppl
 test_loss = evaluate(test_data)
-print('=' * 91)
-print('| End of training | '
-      'test loss {:5.2f} | '
-      'test ppl {:8.2f} |'
+test_ppl = math.exp(test_loss)
+
+print()
+print('Test loss {:5.2f} | '
+      'Test PPL {:8.2f}'
       .format(
           test_loss,
           math.exp(test_loss),
       ))
-print('=' * 91)
+print()
 
-# generate a sample sentence
-generateSentence()
+# generate sample sentences
+generate_sentences()
